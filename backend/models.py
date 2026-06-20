@@ -99,11 +99,16 @@ class ChatMessageSave(BaseModel):
 
 # ===== Mutations =====
 class SaveDatasetRequest(BaseModel):
+    """New (preferred) save flow: provide upload_id from a recent /upload call.
+
+    Avoids re-sending the (potentially huge) cleaned_data over the wire — the server
+    already has it cached as draft chunks from the upload.
+    """
+    upload_id: str
     name: str
-    cleaned_data: List[Dict[str, Any]]
-    original_data: List[Dict[str, Any]]
     numeric_columns: List[str]
     label_columns: List[str]
+    date_columns: List[str] = []
     quality_score: int
 
 
@@ -112,4 +117,5 @@ class RenameDatasetRequest(BaseModel):
 
 
 class RemoveDuplicatesRequest(BaseModel):
-    cleaned_data: List[Dict[str, Any]]
+    """Operates on the server-side draft chunks identified by upload_id."""
+    upload_id: str

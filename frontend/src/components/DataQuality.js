@@ -28,22 +28,23 @@ const DataQuality = ({ data: initialData, onSave, onCancel }) => {
     try {
       const response = await axios.post(
         `${API_BASE}/datasets/remove-duplicates`,
-        { cleaned_data: data.cleaned_data },
+        { upload_id: data.upload_id },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      // Update local data with deduplicated rows, bump score, and rewrite the duplicate issue
       const newIssues = data.issues
         .filter(i => !i.message.toLowerCase().includes('duplicate'))
         .concat([{ type: 'success', message: `Removed ${response.data.removed} duplicate rows` }]);
       setData({
         ...data,
-        cleaned_data: response.data.cleaned_data,
+        preview_data: response.data.preview_data,
+        total_rows: response.data.total_rows,
         duplicates_found: 0,
         score: Math.min(100, data.score + 10),
         issues: newIssues
       });
     } catch (err) {
       console.error('Remove duplicates failed:', err);
+      alert('Failed to remove duplicates: ' + (err.response?.data?.detail || err.message));
     } finally {
       setRemovingDuplicates(false);
     }

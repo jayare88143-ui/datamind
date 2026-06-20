@@ -18,6 +18,16 @@ async def ensure_indexes() -> None:
         ("datasets", [("user_id", 1), ("created_at", -1)], {}),
         ("users", "email", {"unique": True}),
         ("dataset_rows", [("dataset_id", 1), ("user_id", 1), ("chunk_index", 1)], {}),
+        # TTL index: auto-delete draft chunks 1h after upload if user never proceeds.
+        # partialFilterExpression keeps committed chunks immune.
+        (
+            "dataset_rows",
+            [("created_at", 1)],
+            {
+                "expireAfterSeconds": 3600,
+                "partialFilterExpression": {"status": "draft"},
+            },
+        ),
     ]
     for collection, keys, opts in index_specs:
         try:

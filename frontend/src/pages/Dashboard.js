@@ -52,21 +52,26 @@ const Dashboard = () => {
 
   const handleSaveDataset = async (name, updatedQualityData) => {
     const dataToSave = updatedQualityData || qualityData;
+    if (!dataToSave?.upload_id) {
+      alert('Upload session expired. Please re-upload the file.');
+      setShowQuality(false);
+      setQualityData(null);
+      return;
+    }
     try {
       const response = await axios.post(
         `${API_BASE}/datasets/save`,
         {
+          upload_id: dataToSave.upload_id,
           name: name,
-          cleaned_data: dataToSave.cleaned_data,
-          original_data: dataToSave.original_data,
           numeric_columns: dataToSave.numeric_columns,
           label_columns: dataToSave.label_columns,
+          date_columns: dataToSave.date_columns || [],
           quality_score: dataToSave.score
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
       const newDataset = response.data;
-      // Add the new dataset to the local list (newest first) and select it
       setDatasets((prev) => [newDataset, ...prev.filter(d => d.id !== newDataset.id)]);
       setCurrentDataset(newDataset);
       setShowQuality(false);
@@ -80,29 +85,30 @@ const Dashboard = () => {
 
   const loadSampleData = async () => {
     try {
+      // Fetch sample rows, then push them through the regular upload pipeline by
+      // converting to a CSV blob — keeps a single code path on the backend.
       const response = await axios.get(`${API_BASE}/datasets/sample/data`);
       const sampleData = response.data;
-      
-      // Process sample data as if uploaded
-      const quality = {
-        score: 100,
-        issues: [
-          { type: 'success', message: 'No empty rows found' },
-          { type: 'success', message: 'No duplicate rows found' },
-          { type: 'success', message: 'All 4 numeric columns valid' }
-        ],
-        rows_removed: 0,
-        duplicates_found: 0,
-        cleaned_data: sampleData,
-        original_data: sampleData,
-        numeric_columns: ['revenue', 'orders', 'cac', 'churn'],
-        label_columns: ['month']
-      };
-      
-      setQualityData(quality);
+
+      const headers = Object.keys(sampleData[0]);
+      const csvRows = [headers.join(',')];
+      for (const row of sampleData) {
+        csvRows.push(headers.map(h => row[h]).join(','));
+      }
+      const csvBlob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+
+      const formData = new FormData();
+      formData.append('file', csvBlob, 'sample.csv');
+
+      const upload = await axios.post(`${API_BASE}/datasets/upload`, formData, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
+      });
+
+      setQualityData(upload.data);
       setShowQuality(true);
     } catch (error) {
       console.error('Failed to load sample data:', error);
+      alert('Failed to load sample data: ' + (error.response?.data?.detail || error.message));
     }
   };
 

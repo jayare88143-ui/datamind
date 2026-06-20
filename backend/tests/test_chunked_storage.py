@@ -58,12 +58,18 @@ def large_dataset(session, auth_headers):
     print(f"\nupload took {time.time()-t0:.1f}s, status={r.status_code}, size={len(csv_bytes)/1e6:.1f}MB")
     assert r.status_code == 200, f"upload failed: {r.status_code} {r.text[:200]}"
     rep = r.json()
+    # Upload response must be lean: no cleaned_data, no original_data
+    assert "cleaned_data" not in rep
+    assert "original_data" not in rep
+    assert "upload_id" in rep
+    assert rep["total_rows"] == 19_418
+    assert len(rep["preview_data"]) <= 50
     payload = {
+        "upload_id": rep["upload_id"],
         "name": "TEST_chunked_19k",
-        "cleaned_data": rep["cleaned_data"],
-        "original_data": rep["original_data"],
         "numeric_columns": rep["numeric_columns"],
         "label_columns": rep["label_columns"],
+        "date_columns": rep.get("date_columns", []),
         "quality_score": rep["score"],
     }
     t1 = time.time()
@@ -177,11 +183,11 @@ def test_delete_large_dataset_cascade(session, auth_headers):
     files = {"file": ("c.csv", io.BytesIO(csv_bytes), "text/csv")}
     rep = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files, timeout=120).json()
     payload = {
+        "upload_id": rep["upload_id"],
         "name": "TEST_cascade",
-        "cleaned_data": rep["cleaned_data"],
-        "original_data": rep["original_data"],
         "numeric_columns": rep["numeric_columns"],
         "label_columns": rep["label_columns"],
+        "date_columns": rep.get("date_columns", []),
         "quality_score": rep["score"],
     }
     ds = session.post(f"{API}/datasets/save", headers=auth_headers, json=payload, timeout=120).json()
@@ -238,11 +244,11 @@ def test_backward_compat_small_csv_works(session, auth_headers):
     files = {"file": ("small.csv", io.BytesIO(csv_bytes), "text/csv")}
     rep = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files, timeout=30).json()
     payload = {
+        "upload_id": rep["upload_id"],
         "name": "TEST_small_compat",
-        "cleaned_data": rep["cleaned_data"],
-        "original_data": rep["original_data"],
         "numeric_columns": rep["numeric_columns"],
         "label_columns": rep["label_columns"],
+        "date_columns": rep.get("date_columns", []),
         "quality_score": rep["score"],
     }
     ds = session.post(f"{API}/datasets/save", headers=auth_headers, json=payload, timeout=30).json()

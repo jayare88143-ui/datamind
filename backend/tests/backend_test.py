@@ -108,46 +108,32 @@ def test_csv_upload_invalid_extension(session, auth_headers):
 
 # ===== DATASET SAVE / GET / DELETE =====
 
-@pytest.fixture
-def sample_dataset_id(session, auth_headers):
-    """Build full dataset via sample data + save endpoint."""
-    sample = session.get(f"{API}/datasets/sample/data").json()
-    # Upload via CSV path to get quality report
+def _upload_and_save(session, auth_headers, name="TEST_ds", sample_override=None):
+    """Helper using the NEW upload_id flow."""
     import pandas as pd
-    df = pd.DataFrame(sample)
-    csv_bytes = df.to_csv(index=False).encode()
+    sample = sample_override if sample_override is not None else session.get(f"{API}/datasets/sample/data").json()
+    csv_bytes = pd.DataFrame(sample).to_csv(index=False).encode()
     files = {"file": ("sample.csv", io.BytesIO(csv_bytes), "text/csv")}
     r = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files)
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     rep = r.json()
-
-    # Save dataset - note: endpoint uses query/body params (Body inferred since no Body() but JSON-like types)
-    # Try as JSON body
     payload = {
-        "name": "TEST_sample",
-        "cleaned_data": rep["cleaned_data"],
-        "original_data": rep["original_data"],
+        "upload_id": rep["upload_id"],
+        "name": name,
         "numeric_columns": rep["numeric_columns"],
         "label_columns": rep["label_columns"],
+        "date_columns": rep.get("date_columns", []),
         "quality_score": rep["score"],
     }
     r2 = session.post(f"{API}/datasets/save", headers=auth_headers, json=payload)
-    if r2.status_code != 200:
-        # Try with name as query param
-        r2 = session.post(
-            f"{API}/datasets/save?name=TEST_sample&quality_score={rep['score']}",
-            headers=auth_headers,
-            json={
-                "cleaned_data": rep["cleaned_data"],
-                "original_data": rep["original_data"],
-                "numeric_columns": rep["numeric_columns"],
-                "label_columns": rep["label_columns"],
-            },
-        )
     assert r2.status_code == 200, f"save failed: {r2.status_code} {r2.text}"
-    ds = r2.json()
+    return r2.json(), rep
+
+
+@pytest.fixture
+def sample_dataset_id(session, auth_headers):
+    ds, _ = _upload_and_save(session, auth_headers, name="TEST_sample")
     yield ds["id"]
-    # cleanup
     session.delete(f"{API}/datasets/{ds['id']}", headers=auth_headers)
 
 
@@ -177,28 +163,8 @@ def test_datasets_list(session, auth_headers, sample_dataset_id):
 
 
 def test_dataset_delete(session, auth_headers):
-    # Create then delete
-    sample = session.get(f"{API}/datasets/sample/data").json()
-    import pandas as pd
-    csv_bytes = pd.DataFrame(sample).to_csv(index=False).encode()
-    files = {"file": ("s.csv", io.BytesIO(csv_bytes), "text/csv")}
-    rep = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files).json()
-    payload = {
-        "name": "TEST_del",
-        "cleaned_data": rep["cleaned_data"],
-        "original_data": rep["original_data"],
-        "numeric_columns": rep["numeric_columns"],
-        "label_columns": rep["label_columns"],
-        "quality_score": rep["score"],
-    }
-    r2 = session.post(f"{API}/datasets/save", headers=auth_headers, json=payload)
-    if r2.status_code != 200:
-        r2 = session.post(
-            f"{API}/datasets/save?name=TEST_del&quality_score={rep['score']}",
-            headers=auth_headers,
-            json={k: payload[k] for k in ["cleaned_data", "original_data", "numeric_columns", "label_columns"]},
-        )
-    ds_id = r2.json()["id"]
+    ds, _ = _upload_and_save(session, auth_headers, name="TEST_del")
+    ds_id = ds["id"]
     r3 = session.delete(f"{API}/datasets/{ds_id}", headers=auth_headers)
     assert r3.status_code == 200
     r4 = session.get(f"{API}/datasets/{ds_id}", headers=auth_headers)
@@ -258,25 +224,12 @@ def test_metric_analyze_stream(session, auth_headers, sample_dataset_id):
 # ===== NEW FEATURES: RENAME, REMOVE-DUPLICATES, CHAT HISTORY =====
 
 def _create_dataset(session, auth_headers, name="TEST_new", with_dupes=False):
-    """Helper to create a dataset and return id + report payload."""
-    import pandas as pd
+    """Helper to create a dataset using the NEW upload_id flow."""
     sample = session.get(f"{API}/datasets/sample/data").json()
     if with_dupes:
-        sample = sample + [sample[0], sample[1]]  # add duplicates
-    csv_bytes = pd.DataFrame(sample).to_csv(index=False).encode()
-    files = {"file": ("s.csv", io.BytesIO(csv_bytes), "text/csv")}
-    rep = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files).json()
-    payload = {
-        "name": name,
-        "cleaned_data": rep["cleaned_data"],
-        "original_data": rep["original_data"],
-        "numeric_columns": rep["numeric_columns"],
-        "label_columns": rep["label_columns"],
-        "quality_score": rep["score"],
-    }
-    r = session.post(f"{API}/datasets/save", headers=auth_headers, json=payload)
-    assert r.status_code == 200, r.text
-    return r.json()["id"], rep
+        sample = sample + [sample[0], sample[1]]
+    ds, rep = _upload_and_save(session, auth_headers, name=name, sample_override=sample)
+    return ds["id"], rep
 
 
 # --- Rename Dataset ---
@@ -311,26 +264,35 @@ def test_rename_dataset_requires_auth(session):
 # --- Remove Duplicates ---
 
 def test_remove_duplicates_success(session, auth_headers):
+    import pandas as pd
     data_with_dups = [
         {"month": "Jan", "revenue": 100},
         {"month": "Feb", "revenue": 200},
-        {"month": "Jan", "revenue": 100},  # dup
+        {"month": "Jan", "revenue": 100},
         {"month": "Mar", "revenue": 300},
-        {"month": "Feb", "revenue": 200},  # dup
+        {"month": "Feb", "revenue": 200},
     ]
+    csv_bytes = pd.DataFrame(data_with_dups).to_csv(index=False).encode()
+    files = {"file": ("d.csv", io.BytesIO(csv_bytes), "text/csv")}
+    rep = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files).json()
     r = session.post(f"{API}/datasets/remove-duplicates", headers=auth_headers,
-                     json={"cleaned_data": data_with_dups})
+                     json={"upload_id": rep["upload_id"]})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["removed"] == 2
     assert body["remaining"] == 3
-    assert len(body["cleaned_data"]) == 3
+    assert "preview_data" in body
+    assert body["total_rows"] == 3
 
 
 def test_remove_duplicates_no_dupes(session, auth_headers):
+    import pandas as pd
     data = [{"a": 1}, {"a": 2}, {"a": 3}]
+    csv_bytes = pd.DataFrame(data).to_csv(index=False).encode()
+    files = {"file": ("d.csv", io.BytesIO(csv_bytes), "text/csv")}
+    rep = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files).json()
     r = session.post(f"{API}/datasets/remove-duplicates", headers=auth_headers,
-                     json={"cleaned_data": data})
+                     json={"upload_id": rep["upload_id"]})
     assert r.status_code == 200
     body = r.json()
     assert body["removed"] == 0
@@ -338,8 +300,14 @@ def test_remove_duplicates_no_dupes(session, auth_headers):
 
 
 def test_remove_duplicates_requires_auth(session):
-    r = session.post(f"{API}/datasets/remove-duplicates", json={"cleaned_data": []})
+    r = session.post(f"{API}/datasets/remove-duplicates", json={"upload_id": "x"})
     assert r.status_code in (401, 403)
+
+
+def test_remove_duplicates_unknown_upload_id(session, auth_headers):
+    r = session.post(f"{API}/datasets/remove-duplicates", headers=auth_headers,
+                     json={"upload_id": "does-not-exist-uuid"})
+    assert r.status_code == 404
 
 
 # --- Chat History CRUD ---
@@ -463,33 +431,18 @@ def test_no_date_columns_when_absent(session, auth_headers):
 
 def test_datasets_sorted_newest_first(session, auth_headers):
     """The dataset list must be sorted by created_at desc (newest first)."""
-    import pandas as pd, time
+    import time
     created_ids = []
     try:
         for i in range(3):
-            sample = session.get(f"{API}/datasets/sample/data").json()
-            csv_bytes = pd.DataFrame(sample).to_csv(index=False).encode()
-            files = {"file": ("s.csv", io.BytesIO(csv_bytes), "text/csv")}
-            rep = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files).json()
-            payload = {
-                "name": f"TEST_order_{i}",
-                "cleaned_data": rep["cleaned_data"],
-                "original_data": rep["original_data"],
-                "numeric_columns": rep["numeric_columns"],
-                "label_columns": rep["label_columns"],
-                "quality_score": rep["score"],
-            }
-            r = session.post(f"{API}/datasets/save", headers=auth_headers, json=payload)
-            assert r.status_code == 200
-            created_ids.append(r.json()["id"])
-            time.sleep(0.05)  # ensure distinct created_at
+            ds, _ = _upload_and_save(session, auth_headers, name=f"TEST_order_{i}")
+            created_ids.append(ds["id"])
+            time.sleep(0.05)
 
         r = session.get(f"{API}/datasets", headers=auth_headers)
         assert r.status_code == 200
         all_ds = r.json()
-        # Find our test datasets in returned order
         ours = [d for d in all_ds if d["id"] in created_ids]
-        # First one we created should be LAST in the returned list among ours (newest first)
         order_by_returned = [d["id"] for d in ours]
         expected = list(reversed(created_ids))
         assert order_by_returned == expected, f"Expected newest-first {expected} got {order_by_returned}"
