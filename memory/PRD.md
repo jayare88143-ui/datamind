@@ -44,13 +44,24 @@ Small business owners and team members without data analysis skills who need qui
 - P2: One-click duplicate removal button ✅ (Feb 20, 2026)
 - P2: Date format detection and flagging (pending)
 
-## Iteration 2 (Feb 20, 2026)
-- ✅ DatasetSelector dropdown in header with inline rename/delete
-- ✅ DataTable pagination (50 rows/page) with Prev/Next + page input
-- ✅ AIChat history persisted in MongoDB (`chat_messages` collection)
-- ✅ One-click "Remove Duplicates" button in Data Quality report
-- ✅ Backend endpoints: PATCH /datasets/{id}/rename, POST /datasets/remove-duplicates, GET/POST/DELETE /chat/history/{dataset_id}, POST /chat/save
-- ✅ 25/25 backend tests passing
+## Iteration 3 (Feb 20, 2026)
+- ✅ **P4 BUG FIX**: Proceed-to-Dashboard now shows the just-uploaded dataset (was showing arbitrary Mongo-order dataset). FE prepends new dataset to local state; backend now sorts datasets by created_at desc.
+- ✅ **P2** Date format detection: `_detect_date_column` in analysis.py detects date columns via regex+format-trial. Flags inconsistent formats as error (-8 score), consistent formats as success. New `date_columns: List[str]` field in `DataQualityReport`.
+- ✅ **P3** MongoDB indexes via `ensure_indexes()` in lifespan: `chat_messages(dataset_id, user_id, timestamp)`, `datasets(user_id, created_at desc)`, unique `users(email)`. Wrapped in try/except so misshapen pre-existing collections don't block startup.
+- ✅ **P3** Refactored server.py (~680 → 53 lines) into 7 focused modules:
+  - `db.py` - Mongo client + ensure_indexes
+  - `models.py` - all Pydantic models
+  - `auth.py` - JWT, password, signup/login routes
+  - `analysis.py` - CSV cleaning, date detection, anomaly detection, metric calc
+  - `datasets_routes.py` - dataset CRUD + sample data
+  - `chat_routes.py` - AI chat streaming + history + metric analyze
+  - `server.py` - app composition only
+- ✅ 29/29 backend tests passing
+
+## Backlog (next)
+- P2: Date Columns stat card in DataQuality UI (alongside Numeric/Label columns)
+- P3: Stronger date format ambiguity detection (e.g. 01/02/2024 vs 02/01/2024)
+- P3: Pagination for original-data preservation when file > 50K rows
 
 ## Key Files
 - Backend: `/app/backend/server.py` (single file with all routes)
