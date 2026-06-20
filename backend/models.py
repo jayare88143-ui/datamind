@@ -72,19 +72,28 @@ class MetricSummary(BaseModel):
 
 
 class MetricConfig(BaseModel):
-    """Per-metric user configuration set on the ConfigureMetrics screen."""
-    column: str
+    """Per-metric user configuration set on the ConfigureMetrics screen.
+
+    Two flavours:
+    1. Single-column metric — set `column` + `calculation`.
+    2. Custom formula metric (PowerBI/Tableau-style) — set `formula` like
+       `revenue / orders` or `revenue - cac * orders`. The formula is evaluated
+       per row, then reduced to one headline number by `calculation`.
+    """
     display_name: str
-    calculation: str = 'latest'
     enabled: bool = True
+    column: Optional[str] = None
+    calculation: str = 'latest'
+    formula: Optional[str] = None  # if set, takes precedence over `column`
 
 
 class SuggestedMetricConfig(BaseModel):
     """What the server recommends. Frontend pre-fills the form with these."""
-    column: str
+    column: Optional[str] = None
+    formula: Optional[str] = None  # set for cross-column suggestions
     suggested_display_name: str
     suggested_calculation: str
-    rationale: str  # short hint shown in the UI
+    rationale: str
 
 
 class Dataset(BaseModel):
