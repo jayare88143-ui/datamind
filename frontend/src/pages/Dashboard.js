@@ -8,6 +8,7 @@ import DataQuality from '../components/DataQuality';
 import AIChat from '../components/AIChat';
 import DataTable from '../components/DataTable';
 import MetricDetail from '../components/MetricDetail';
+import ConfigureMetrics from '../components/ConfigureMetrics';
 import DatasetSelector from '../components/DatasetSelector';
 import { jsPDF } from 'jspdf';
 
@@ -20,6 +21,7 @@ const Dashboard = () => {
   const [currentDataset, setCurrentDataset] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
   const [showQuality, setShowQuality] = useState(false);
+  const [showConfigure, setShowConfigure] = useState(false);
   const [qualityData, setQualityData] = useState(null);
   const [selectedMetric, setSelectedMetric] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -50,11 +52,11 @@ const Dashboard = () => {
     setShowQuality(true);
   };
 
-  const handleSaveDataset = async (name, updatedQualityData) => {
-    const dataToSave = updatedQualityData || qualityData;
-    if (!dataToSave?.upload_id) {
+  const handleSaveDataset = async (name, metricConfigs) => {
+    if (!qualityData?.upload_id) {
       alert('Upload session expired. Please re-upload the file.');
       setShowQuality(false);
+      setShowConfigure(false);
       setQualityData(null);
       return;
     }
@@ -62,12 +64,13 @@ const Dashboard = () => {
       const response = await axios.post(
         `${API_BASE}/datasets/save`,
         {
-          upload_id: dataToSave.upload_id,
+          upload_id: qualityData.upload_id,
           name: name,
-          numeric_columns: dataToSave.numeric_columns,
-          label_columns: dataToSave.label_columns,
-          date_columns: dataToSave.date_columns || [],
-          quality_score: dataToSave.score
+          numeric_columns: qualityData.numeric_columns,
+          label_columns: qualityData.label_columns,
+          date_columns: qualityData.date_columns || [],
+          quality_score: qualityData.score,
+          metric_configs: metricConfigs || null,
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -75,6 +78,7 @@ const Dashboard = () => {
       setDatasets((prev) => [newDataset, ...prev.filter(d => d.id !== newDataset.id)]);
       setCurrentDataset(newDataset);
       setShowQuality(false);
+      setShowConfigure(false);
       setQualityData(null);
       setActiveTab('dashboard');
     } catch (error) {
@@ -183,11 +187,30 @@ const Dashboard = () => {
     return (
       <DataQuality
         data={qualityData}
-        onSave={handleSaveDataset}
+        onProceed={(updatedQualityData) => {
+          // Move to Configure Metrics step. Pull through any updates from
+          // Remove Duplicates (the upload_id may have changed).
+          if (updatedQualityData) setQualityData(updatedQualityData);
+          setShowQuality(false);
+          setShowConfigure(true);
+        }}
         onCancel={() => {
           setShowQuality(false);
           setQualityData(null);
         }}
+      />
+    );
+  }
+
+  if (showConfigure && qualityData) {
+    return (
+      <ConfigureMetrics
+        qualityData={qualityData}
+        onBack={() => {
+          setShowConfigure(false);
+          setShowQuality(true);
+        }}
+        onSave={handleSaveDataset}
       />
     );
   }
@@ -432,18 +455,25 @@ const DashboardView = ({ dataset, onMetricClick }) => {
           return (
             <div
               key={metric.name}
-              data-testid={`metric-card-${metric.name}`}
+              data-testid={`metric-card-${metric.column || metric.name}`}
               onClick={() => onMetricClick(metric)}
               className="metric-card glass-card p-6 cursor-pointer hover:border-[#6366f1] transition-all"
             >
               <div className="flex items-start justify-between mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold text-white mb-1">{metric.name}</h3>
-                  <div className={`flex items-center gap-2 text-sm ${
-                    isUp ? 'trend-up' : isDown ? 'trend-down' : 'trend-flat'
-                  }`}>
-                    {isUp ? <TrendingUp className="w-4 h-4" /> : isDown ? <TrendingDown className="w-4 h-4" /> : <Minus className="w-4 h-4" />}
-                    <span className="font-medium">{Math.abs(metric.trend_percent).toFixed(1)}% per period</span>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-lg font-semibold text-white mb-1 truncate" title={metric.name}>{metric.name}</h3>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {metric.calculation && metric.calculation !== 'latest' && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc' }}>
+                        {metric.calculation}
+                      </span>
+                    )}
+                    <div className={`flex items-center gap-1 text-sm ${
+                      isUp ? 'trend-up' : isDown ? 'trend-down' : 'trend-flat'
+                    }`}>
+                      {isUp ? <TrendingUp className="w-4 h-4" /> : isDown ? <TrendingDown className="w-4 h-4" /> : <Minus className="w-4 h-4" />}
+                      <span className="font-medium">{Math.abs(metric.trend_percent).toFixed(1)}% per period</span>
+                    </div>
                   </div>
                 </div>
                 {metric.anomalies && metric.anomalies.length > 0 && (

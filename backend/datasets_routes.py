@@ -15,7 +15,12 @@ from typing import Any, Dict, List
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from analysis import calculate_metrics, clean_and_analyze_csv, detect_anomalies
+from analysis import (
+    build_suggested_metric_configs,
+    calculate_metrics,
+    clean_and_analyze_csv,
+    detect_anomalies,
+)
 from auth import get_current_user
 from db import db
 from models import (
@@ -154,9 +159,13 @@ async def upload_csv(file: UploadFile = File(...), current_user: Dict = Depends(
     report = clean_and_analyze_csv(raw_data)
 
     upload_id = str(uuid.uuid4())
-    # Sanitize before storing so chunks read back later are also JSON-safe
     safe_cleaned = _sanitize(report.cleaned_data)
     await _store_chunks(upload_id, current_user['id'], safe_cleaned, status="draft")
+
+    # Compute smart suggestions over the cleaned dataframe (uses the original
+    # numeric values, not the JSON-sanitized list).
+    df_for_suggest = pd.DataFrame(safe_cleaned)
+    suggested = build_suggested_metric_configs(df_for_suggest, report.numeric_columns)
 
     return {
         "upload_id": upload_id,
@@ -169,6 +178,7 @@ async def upload_csv(file: UploadFile = File(...), current_user: Dict = Depends(
         "date_columns": report.date_columns,
         "total_rows": len(safe_cleaned),
         "preview_data": safe_cleaned[:PREVIEW_ROWS],
+        "suggested_metric_configs": [s.model_dump() for s in suggested],
     }
 
 
@@ -189,7 +199,13 @@ async def save_dataset(request: SaveDatasetRequest, current_user: Dict = Depends
     df = pd.DataFrame(cleaned_data)
 
     anomalies = detect_anomalies(df, request.numeric_columns, request.label_columns)
-    metrics = calculate_metrics(df, request.numeric_columns, request.label_columns, anomalies)
+    metrics = calculate_metrics(
+        df,
+        request.numeric_columns,
+        request.label_columns,
+        anomalies,
+        metric_configs=request.metric_configs,
+    )
 
     dataset = Dataset(
         id=request.upload_id,  # reuse the upload_id so chunks already point to us
@@ -228,7 +244,13 @@ async def remove_duplicates(
     request: RemoveDuplicatesRequest,
     current_user: Dict = Depends(get_current_user),
 ):
-    """Run dedupe on the server-side draft data and rewrite the chunks in place."""
+    """Dedupe the server-side draft data and return a NEW upload_id.
+
+    Crash-safe: writes a fresh upload_id atomically (chunks inserted in one bulk op)
+    BEFORE deleting the old chunks. If anything fails after the new chunks land, the
+    frontend has the new upload_id and the old chunks are just orphans the TTL will
+    reap within an hour. No corrupted half-state can result.
+    """
     cleaned_data = await _load_all_draft_rows(request.upload_id, current_user['id'])
     df = pd.DataFrame(cleaned_data)
     initial = len(df)
@@ -236,13 +258,17 @@ async def remove_duplicates(
     deduped_rows = _sanitize(df_dedup.to_dict('records'))
     removed = initial - len(deduped_rows)
 
-    # Replace draft chunks atomically-ish: delete then re-insert
+    # Write the new draft under a fresh upload_id (atomic single bulk insert)
+    new_upload_id = str(uuid.uuid4())
+    await _store_chunks(new_upload_id, current_user['id'], deduped_rows, status="draft")
+
+    # Best-effort cleanup of the old draft; TTL reaps it within 1h if this fails
     await db.dataset_rows.delete_many(
         {"dataset_id": request.upload_id, "user_id": current_user['id'], "status": "draft"},
     )
-    await _store_chunks(request.upload_id, current_user['id'], deduped_rows, status="draft")
 
     return {
+        "upload_id": new_upload_id,
         "removed": removed,
         "remaining": len(deduped_rows),
         "preview_data": deduped_rows[:PREVIEW_ROWS],

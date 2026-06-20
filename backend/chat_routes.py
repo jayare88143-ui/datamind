@@ -96,7 +96,12 @@ async def analyze_metric(
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    metric = next((m for m in dataset['metrics'] if m['name'] == metric_name), None)
+    # Match by `column` (immutable CSV header) OR `name` (legacy/display) for back-compat
+    metric = next(
+        (m for m in dataset['metrics']
+         if m.get('column') == metric_name or m.get('name') == metric_name),
+        None,
+    )
     if not metric:
         raise HTTPException(status_code=404, detail="Metric not found")
 

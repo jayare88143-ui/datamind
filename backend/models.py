@@ -57,7 +57,9 @@ class Anomaly(BaseModel):
 
 
 class MetricSummary(BaseModel):
-    name: str
+    name: str  # display name (user-customizable)
+    column: str = ''  # original CSV column (immutable; used for AI deep-dive URL)
+    calculation: str = 'latest'  # 'latest' | 'sum' | 'mean' | 'min' | 'max' | 'count' | 'growth'
     latest_value: float
     mom_change: Optional[float]
     trend: str
@@ -67,6 +69,22 @@ class MetricSummary(BaseModel):
     mean: float
     std_dev: float
     anomalies: List[Anomaly]
+
+
+class MetricConfig(BaseModel):
+    """Per-metric user configuration set on the ConfigureMetrics screen."""
+    column: str
+    display_name: str
+    calculation: str = 'latest'
+    enabled: bool = True
+
+
+class SuggestedMetricConfig(BaseModel):
+    """What the server recommends. Frontend pre-fills the form with these."""
+    column: str
+    suggested_display_name: str
+    suggested_calculation: str
+    rationale: str  # short hint shown in the UI
 
 
 class Dataset(BaseModel):
@@ -110,6 +128,7 @@ class SaveDatasetRequest(BaseModel):
     label_columns: List[str]
     date_columns: List[str] = []
     quality_score: int
+    metric_configs: Optional[List["MetricConfig"]] = None  # noqa: F821 - forward ref
 
 
 class RenameDatasetRequest(BaseModel):

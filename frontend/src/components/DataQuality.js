@@ -5,10 +5,9 @@ import axios from 'axios';
 
 const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
-const DataQuality = ({ data: initialData, onSave, onCancel }) => {
+const DataQuality = ({ data: initialData, onProceed, onCancel }) => {
   const { token } = useAuth();
   const [data, setData] = useState(initialData);
-  const [datasetName, setDatasetName] = useState('My Dataset');
   const [removingDuplicates, setRemovingDuplicates] = useState(false);
 
   const getScoreColor = (score) => {
@@ -36,6 +35,7 @@ const DataQuality = ({ data: initialData, onSave, onCancel }) => {
         .concat([{ type: 'success', message: `Removed ${response.data.removed} duplicate rows` }]);
       setData({
         ...data,
+        upload_id: response.data.upload_id, // new id after dedup
         preview_data: response.data.preview_data,
         total_rows: response.data.total_rows,
         duplicates_found: 0,
@@ -139,27 +139,14 @@ const DataQuality = ({ data: initialData, onSave, onCancel }) => {
             </div>
           )}
 
-          {/* Dataset Name */}
-          <div className="mb-6">
-            <label className="block text-sm font-medium text-gray-300 mb-2">Dataset Name</label>
-            <input
-              data-testid="dataset-name-input"
-              type="text"
-              value={datasetName}
-              onChange={(e) => setDatasetName(e.target.value)}
-              className="w-full px-4 py-3 rounded-lg bg-[#12121f] border border-[#1e1e2e] text-white focus:outline-none focus:border-[#6366f1] transition-colors"
-              placeholder="Enter dataset name"
-            />
-          </div>
-
           {/* Actions */}
           <div className="flex gap-4">
             <button
               data-testid="proceed-button"
-              onClick={() => onSave(datasetName, data)}
+              onClick={() => onProceed(data)}
               className="flex-1 py-3 rounded-lg bg-[#6366f1] hover:bg-[#5558e3] text-white font-medium transition-all transform hover:scale-[1.02]"
             >
-              Proceed to Dashboard
+              Next: Configure Metrics
             </button>
             <button
               data-testid="fix-first-button"

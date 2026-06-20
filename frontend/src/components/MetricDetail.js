@@ -15,8 +15,9 @@ const MetricDetail = ({ metric, datasetId, onClose }) => {
 
   const fetchAnalysis = async () => {
     try {
+      const metricKey = metric.column || metric.name;
       const response = await fetch(
-        `${API_BASE}/metrics/${encodeURIComponent(metric.name)}/analyze?dataset_id=${datasetId}`,
+        `${API_BASE}/metrics/${encodeURIComponent(metricKey)}/analyze?dataset_id=${datasetId}`,
         {
           method: 'POST',
           headers: {

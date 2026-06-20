@@ -1,11 +1,11 @@
 """Data processing: CSV cleaning, date detection, anomaly detection, metric calculation."""
 import re
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
 
-from models import Anomaly, DataQualityIssue, DataQualityReport, MetricSummary
+from models import Anomaly, DataQualityIssue, DataQualityReport, MetricConfig, MetricSummary, SuggestedMetricConfig
 
 # Common date formats we try, in order of specificity
 _DATE_FORMATS = [
@@ -194,8 +194,15 @@ def calculate_metrics(
     numeric_columns: List[str],
     label_columns: List[str],
     anomalies: List[Anomaly],
+    metric_configs: Optional[List[MetricConfig]] = None,
 ) -> List[MetricSummary]:
-    """Per-metric summary with sparkline values, MoM change, and trend."""
+    """Per-metric summary with sparkline values, MoM change, and trend.
+
+    If `metric_configs` is provided, only enabled configs are computed; each metric's
+    headline `latest_value` reflects the chosen calculation (sum/mean/min/max/count/
+    growth/latest). The raw value series is still preserved in `values` for sparkline
+    rendering on the frontend.
+    """
     metrics: List[MetricSummary] = []
 
     if label_columns:
@@ -203,12 +210,21 @@ def calculate_metrics(
     else:
         labels = [f"Row {i}" for i in range(len(df))]
 
-    for col in numeric_columns:
-        values = df[col].fillna(0).tolist()
+    # Resolve which (column, display_name, calculation) tuples to emit
+    if metric_configs:
+        items = [(c.column, c.display_name or c.column, c.calculation) for c in metric_configs if c.enabled]
+    else:
+        items = [(c, c, 'latest') for c in numeric_columns]
+
+    for column, display_name, calculation in items:
+        if column not in df.columns:
+            continue
+        values = df[column].fillna(0).tolist()
         if not values:
             continue
 
-        latest = values[-1]
+        headline = compute_headline_value(values, calculation)
+
         mom_change = None
         if len(values) >= 2 and values[-2] != 0:
             mom_change = ((values[-1] - values[-2]) / values[-2]) * 100
@@ -227,11 +243,13 @@ def calculate_metrics(
         else:
             trend, trend_percent = "flat", 0
 
-        metric_anomalies = [a for a in anomalies if a.metric == col]
+        metric_anomalies = [a for a in anomalies if a.metric == column]
 
         metrics.append(MetricSummary(
-            name=col,
-            latest_value=float(latest),
+            name=display_name,
+            column=column,
+            calculation=calculation,
+            latest_value=float(headline),
             mom_change=float(mom_change) if mom_change is not None else None,
             trend=trend,
             trend_percent=float(trend_percent),
@@ -243,3 +261,110 @@ def calculate_metrics(
         ))
 
     return metrics
+
+
+# ============================================================================
+# Smart metric suggestions
+# ============================================================================
+
+_KW_AVERAGE = {
+    'score', 'rate', 'percent', 'percentage', 'ratio', 'index', 'rating',
+    'csat', 'nps', 'dsat', 'satisfaction', 'churn', 'loss', 'drop', 'error',
+    'cac', 'aov', 'ltv', 'arpu', 'price', 'cost', 'unit', 'average', 'avg',
+    'mean', 'median', 'efficiency',
+}
+_KW_SUM = {
+    'revenue', 'sales', 'amount', 'total', 'sum', 'spend', 'income',
+    'orders', 'customers', 'users', 'visits', 'clicks', 'transactions',
+    'tickets', 'requests', 'signups', 'conversions', 'sessions', 'pageviews',
+}
+_KW_COUNT = {'id', 'count'}
+
+
+def suggest_calculation(column_name: str, sample_values: List[float]) -> tuple[str, str]:
+    """Heuristically pick a default calculation + a short user-facing rationale."""
+    name = column_name.lower()
+    tokens = set(re.split(r'[\s_\-./]+', name))
+
+    # Boolean-ish (0/1) columns → sum (counts occurrences)
+    sample = [v for v in sample_values[:200] if v is not None]
+    if sample:
+        unique = set(sample)
+        if len(unique) <= 2 and unique.issubset({0, 1, 0.0, 1.0}):
+            return 'sum', 'Looks boolean (0/1) — count occurrences'
+
+    # ID-only columns are usually unique-per-row → count
+    if 'id' in tokens or name.endswith('_id') or name.endswith(' id'):
+        return 'count', 'ID column — count distinct rows'
+
+    if tokens & _KW_AVERAGE:
+        return 'mean', 'Rate/score-like — average across rows'
+
+    if tokens & _KW_SUM:
+        return 'sum', 'Aggregate-like — sum across rows'
+
+    # Many rows + no obvious keyword → fall back to mean (safer than latest when
+    # each row is a discrete event rather than a time-series point)
+    if len(sample_values) > 100:
+        return 'mean', 'Many rows — average is usually meaningful'
+
+    return 'latest', 'Looks time-series — show latest period'
+
+
+def suggest_display_name(column_name: str) -> str:
+    """Turn a raw column header into a readable label.
+
+    'monthly_revenue' → 'Monthly Revenue'; 'CAC' / 'NPS' preserved as acronyms.
+    """
+    cleaned = re.sub(r'[_\-]+', ' ', column_name).strip()
+    parts = cleaned.split()
+    out = []
+    for p in parts:
+        # Preserve short ALL-CAPS tokens (likely acronyms)
+        if p.isupper() and len(p) <= 5:
+            out.append(p)
+        else:
+            out.append(p.capitalize())
+    return ' '.join(out) if out else column_name
+
+
+def compute_headline_value(values: List[float], calculation: str) -> float:
+    """Reduce a value series to a single headline number using the chosen calculation."""
+    valid = [v for v in values if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    if not valid:
+        return 0.0
+
+    if calculation == 'sum':
+        return float(sum(valid))
+    if calculation == 'mean':
+        return float(sum(valid) / len(valid))
+    if calculation == 'min':
+        return float(min(valid))
+    if calculation == 'max':
+        return float(max(valid))
+    if calculation == 'count':
+        return float(len(valid))
+    if calculation == 'growth':
+        if len(valid) < 2 or valid[0] == 0:
+            return 0.0
+        return float(((valid[-1] - valid[0]) / valid[0]) * 100)
+    # default: 'latest'
+    return float(valid[-1])
+
+
+def build_suggested_metric_configs(
+    df: pd.DataFrame,
+    numeric_columns: List[str],
+) -> List[SuggestedMetricConfig]:
+    """Generate per-column smart defaults the frontend can pre-fill the form with."""
+    suggestions: List[SuggestedMetricConfig] = []
+    for col in numeric_columns:
+        values = df[col].dropna().tolist() if col in df.columns else []
+        calc, rationale = suggest_calculation(col, values)
+        suggestions.append(SuggestedMetricConfig(
+            column=col,
+            suggested_display_name=suggest_display_name(col),
+            suggested_calculation=calc,
+            rationale=rationale,
+        ))
+    return suggestions
