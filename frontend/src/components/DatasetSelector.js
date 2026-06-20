@@ -78,6 +78,7 @@ const DatasetSelector = ({ datasets, currentDataset, onSelect, onRename, onDelet
       <button
         data-testid="dataset-selector-button"
         onClick={() => setOpen(!open)}
+        aria-label={`Current dataset: ${currentDataset.name}. Click to switch.`}
         className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#12121f] transition-colors text-left"
       >
         <div>

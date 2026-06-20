@@ -448,8 +448,8 @@ const DashboardView = ({ dataset, onMetricClick }) => {
                 )}
               </div>
 
-              <div className="h-20 mb-2">
-                <ResponsiveContainer width="100%" height="100%">
+              <div className="h-20 mb-2" style={{ minWidth: 0 }}>
+                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                   <LineChart data={chartData}>
                     <Line
                       type="monotone"

@@ -44,7 +44,15 @@ Small business owners and team members without data analysis skills who need qui
 - P2: One-click duplicate removal button ✅ (Feb 20, 2026)
 - P2: Date format detection and flagging (pending)
 
-## Iteration 3 (Feb 20, 2026)
+## Iteration 4 (Feb 20, 2026) — Critical P4 Bug Fix
+- ✅ **ROOT CAUSE**: User's real CSV (19,418 rows × 41 cols) produced a 57MB Mongo doc — exceeded BSON 16MB limit → save 500 silently → Proceed-to-Dashboard never advanced.
+- ✅ **FIX**: Chunked storage. `dataset_rows` collection stores 5,000-row chunks. `datasets` metadata now holds only a 50-row preview + total_rows count.
+- ✅ New endpoint `GET /api/datasets/{id}/rows?skip=&limit=` for on-demand paginated row access (caps at 500/req).
+- ✅ Hard cap at 50,000 rows on upload (returns 413 with friendly message, matches user-facing UI tip).
+- ✅ DataTable on FE fetches rows on-demand when the requested page isn't in the embedded preview; falls back to dataset.data for backward compat with pre-chunked saved datasets.
+- ✅ Delete cascade: deleting a dataset clears its rows + chat messages.
+- ✅ A11y: DatasetSelector now has aria-label. Recharts: ResponsiveContainer minWidth=0 silences width(-1) warning on first paint.
+- ✅ 41/41 backend tests passing. End-to-end verified with synthetic 19,418-row CSV.
 - ✅ **P4 BUG FIX**: Proceed-to-Dashboard now shows the just-uploaded dataset (was showing arbitrary Mongo-order dataset). FE prepends new dataset to local state; backend now sorts datasets by created_at desc.
 - ✅ **P2** Date format detection: `_detect_date_column` in analysis.py detects date columns via regex+format-trial. Flags inconsistent formats as error (-8 score), consistent formats as success. New `date_columns: List[str]` field in `DataQualityReport`.
 - ✅ **P3** MongoDB indexes via `ensure_indexes()` in lifespan: `chat_messages(dataset_id, user_id, timestamp)`, `datasets(user_id, created_at desc)`, unique `users(email)`. Wrapped in try/except so misshapen pre-existing collections don't block startup.
