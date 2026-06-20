@@ -417,3 +417,114 @@ def test_delete_dataset_clears_chat(session, auth_headers):
     # Dataset is gone => chat history returns 404 (since ownership check fails)
     r2 = session.get(f"{API}/chat/history/{ds_id}", headers=auth_headers)
     assert r2.status_code == 404
+
+
+# ===== ITERATION 3: DATE DETECTION + INDEXES + ORDERING =====
+
+def _upload_csv(session, auth_headers, csv_text, filename="t.csv"):
+    files = {"file": (filename, io.BytesIO(csv_text.encode()), "text/csv")}
+    r = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_date_detection_inconsistent_format(session, auth_headers):
+    """Mixed date formats should be flagged as error and lower the score."""
+    csv = "date,revenue\n2024-01-15,100\n03/04/2024,200\n2024-03-20,300\n04/05/2024,400\n2024-05-25,500\n"
+    rep = _upload_csv(session, auth_headers, csv)
+    assert "date_columns" in rep
+    assert "date" in rep["date_columns"], f"date col missing: {rep['date_columns']}"
+    assert "date" not in rep["label_columns"]
+    assert "date" not in rep["numeric_columns"]
+    # Should be flagged as error
+    err_msgs = [i for i in rep["issues"] if i["type"] == "error" and "date" in i["message"].lower()]
+    assert len(err_msgs) >= 1, f"No error for mixed date formats: {rep['issues']}"
+    # Score impacted
+    assert rep["score"] < 100
+
+
+def test_date_detection_consistent_format(session, auth_headers):
+    csv = "month,revenue\n2024-01-15,100\n2024-02-15,200\n2024-03-15,300\n2024-04-15,400\n"
+    rep = _upload_csv(session, auth_headers, csv)
+    assert "month" in rep["date_columns"]
+    assert "month" not in rep["label_columns"]
+    assert "month" not in rep["numeric_columns"]
+    # Should have a success issue mentioning consistent date format
+    success = [i for i in rep["issues"] if i["type"] == "success" and "consistent date" in i["message"].lower()]
+    assert len(success) >= 1, f"No success msg for consistent dates: {rep['issues']}"
+
+
+def test_no_date_columns_when_absent(session, auth_headers):
+    csv = "month,revenue,orders\nJan,1000,10\nFeb,2000,20\nMar,3000,30\n"
+    rep = _upload_csv(session, auth_headers, csv)
+    assert rep["date_columns"] == []
+    assert "month" in rep["label_columns"]
+
+
+def test_datasets_sorted_newest_first(session, auth_headers):
+    """The dataset list must be sorted by created_at desc (newest first)."""
+    import pandas as pd, time
+    created_ids = []
+    try:
+        for i in range(3):
+            sample = session.get(f"{API}/datasets/sample/data").json()
+            csv_bytes = pd.DataFrame(sample).to_csv(index=False).encode()
+            files = {"file": ("s.csv", io.BytesIO(csv_bytes), "text/csv")}
+            rep = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files).json()
+            payload = {
+                "name": f"TEST_order_{i}",
+                "cleaned_data": rep["cleaned_data"],
+                "original_data": rep["original_data"],
+                "numeric_columns": rep["numeric_columns"],
+                "label_columns": rep["label_columns"],
+                "quality_score": rep["score"],
+            }
+            r = session.post(f"{API}/datasets/save", headers=auth_headers, json=payload)
+            assert r.status_code == 200
+            created_ids.append(r.json()["id"])
+            time.sleep(0.05)  # ensure distinct created_at
+
+        r = session.get(f"{API}/datasets", headers=auth_headers)
+        assert r.status_code == 200
+        all_ds = r.json()
+        # Find our test datasets in returned order
+        ours = [d for d in all_ds if d["id"] in created_ids]
+        # First one we created should be LAST in the returned list among ours (newest first)
+        order_by_returned = [d["id"] for d in ours]
+        expected = list(reversed(created_ids))
+        assert order_by_returned == expected, f"Expected newest-first {expected} got {order_by_returned}"
+    finally:
+        for did in created_ids:
+            session.delete(f"{API}/datasets/{did}", headers=auth_headers)
+
+
+def test_mongodb_indexes_present(session, auth_headers):
+    """Indirect verification: by calling endpoints that use the indexed fields, they should
+    all succeed. We can't query Mongo directly from here, but a more direct check via
+    pymongo against MONGO_URL is best-effort."""
+    import os
+    mongo_url = os.environ.get('MONGO_URL')
+    db_name = os.environ.get('DB_NAME')
+    if not mongo_url or not db_name:
+        pytest.skip("MONGO_URL / DB_NAME not exposed to test env")
+    try:
+        from pymongo import MongoClient
+    except ImportError:
+        pytest.skip("pymongo not installed in test env")
+
+    c = MongoClient(mongo_url, serverSelectionTimeoutMS=3000)
+    db = c[db_name]
+    chat_idx = list(db.chat_messages.list_indexes())
+    chat_keys = [tuple(i['key'].items()) for i in chat_idx]
+    expected_chat = (('dataset_id', 1), ('user_id', 1), ('timestamp', 1))
+    assert any(tuple(k) == expected_chat for k in chat_keys), f"chat_messages compound index missing: {chat_keys}"
+
+    ds_idx = list(db.datasets.list_indexes())
+    ds_keys = [tuple(i['key'].items()) for i in ds_idx]
+    expected_ds = (('user_id', 1), ('created_at', -1))
+    assert any(tuple(k) == expected_ds for k in ds_keys), f"datasets index missing: {ds_keys}"
+
+    users_idx = list(db.users.list_indexes())
+    users_keys = [tuple(i['key'].items()) for i in users_idx]
+    assert any(('email', 1) in k for k in users_keys), f"users.email index missing: {users_keys}"
+    c.close()

@@ -65,13 +65,16 @@ const Dashboard = () => {
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      setCurrentDataset(response.data);
-      await fetchDatasets();
+      const newDataset = response.data;
+      // Add the new dataset to the local list (newest first) and select it
+      setDatasets((prev) => [newDataset, ...prev.filter(d => d.id !== newDataset.id)]);
+      setCurrentDataset(newDataset);
       setShowQuality(false);
       setQualityData(null);
       setActiveTab('dashboard');
     } catch (error) {
       console.error('Failed to save dataset:', error);
+      alert('Failed to save dataset: ' + (error.response?.data?.detail || error.message));
     }
   };
 
