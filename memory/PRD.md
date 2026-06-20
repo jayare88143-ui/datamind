@@ -37,12 +37,20 @@ Small business owners and team members without data analysis skills who need qui
 - Frontend E2E flow: signup → empty state → sample data → quality report → dashboard → chat → data table
 
 ## Backlog (P1/P2)
-- P1: Save multiple datasets per user with sidebar selector to switch between them
-- P1: CSV pagination for large files (50K+ rows)
-- P2: Dataset rename, delete from UI
-- P2: Chat history persistence across sessions
-- P2: Date format detection and flagging
-- P2: Auto-remove duplicates one-click button
+- P1: Save multiple datasets per user with sidebar selector to switch between them ✅ (Feb 20, 2026)
+- P1: CSV pagination for large files (50K+ rows) ✅ (Feb 20, 2026)
+- P2: Dataset rename, delete from UI ✅ (Feb 20, 2026)
+- P2: Chat history persistence across sessions ✅ (Feb 20, 2026)
+- P2: One-click duplicate removal button ✅ (Feb 20, 2026)
+- P2: Date format detection and flagging (pending)
+
+## Iteration 2 (Feb 20, 2026)
+- ✅ DatasetSelector dropdown in header with inline rename/delete
+- ✅ DataTable pagination (50 rows/page) with Prev/Next + page input
+- ✅ AIChat history persisted in MongoDB (`chat_messages` collection)
+- ✅ One-click "Remove Duplicates" button in Data Quality report
+- ✅ Backend endpoints: PATCH /datasets/{id}/rename, POST /datasets/remove-duplicates, GET/POST/DELETE /chat/history/{dataset_id}, POST /chat/save
+- ✅ 25/25 backend tests passing
 
 ## Key Files
 - Backend: `/app/backend/server.py` (single file with all routes)
