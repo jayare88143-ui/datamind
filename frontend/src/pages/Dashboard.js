@@ -8,6 +8,7 @@ import DataQuality from '../components/DataQuality';
 import AIChat from '../components/AIChat';
 import DataTable from '../components/DataTable';
 import MetricDetail from '../components/MetricDetail';
+import DatasetSelector from '../components/DatasetSelector';
 import { jsPDF } from 'jspdf';
 
 const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -49,17 +50,18 @@ const Dashboard = () => {
     setShowQuality(true);
   };
 
-  const handleSaveDataset = async (name) => {
+  const handleSaveDataset = async (name, updatedQualityData) => {
+    const dataToSave = updatedQualityData || qualityData;
     try {
       const response = await axios.post(
         `${API_BASE}/datasets/save`,
         {
           name: name,
-          cleaned_data: qualityData.cleaned_data,
-          original_data: qualityData.original_data,
-          numeric_columns: qualityData.numeric_columns,
-          label_columns: qualityData.label_columns,
-          quality_score: qualityData.score
+          cleaned_data: dataToSave.cleaned_data,
+          original_data: dataToSave.original_data,
+          numeric_columns: dataToSave.numeric_columns,
+          label_columns: dataToSave.label_columns,
+          quality_score: dataToSave.score
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -243,13 +245,36 @@ const Dashboard = () => {
       {/* Header */}
       <div className="border-b" style={{ borderColor: '#1e1e2e', background: '#0d0d1f' }}>
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)' }}>
-              <TrendingUp className="w-5 h-5 text-white" />
-            </div>
-            <div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)' }}>
+                <TrendingUp className="w-5 h-5 text-white" />
+              </div>
               <h1 className="text-xl font-bold text-white">DataMind</h1>
-              <p className="text-xs text-gray-400">{currentDataset.name}</p>
+            </div>
+            <div className="h-8 w-px" style={{ background: '#1e1e2e' }}></div>
+            <DatasetSelector
+              datasets={datasets}
+              currentDataset={currentDataset}
+              onSelect={(ds) => setCurrentDataset(ds)}
+              onRename={(id, newName) => {
+                setDatasets(prev => prev.map(d => d.id === id ? { ...d, name: newName } : d));
+                if (currentDataset.id === id) {
+                  setCurrentDataset(prev => ({ ...prev, name: newName }));
+                }
+              }}
+              onDelete={(id) => {
+                const remaining = datasets.filter(d => d.id !== id);
+                setDatasets(remaining);
+                if (currentDataset.id === id) {
+                  setCurrentDataset(remaining.length > 0 ? remaining[0] : null);
+                }
+              }}
+              token={token}
+            />
+            <div className="flex items-center gap-1 px-2 py-1 rounded-full" style={{ background: 'rgba(99, 102, 241, 0.1)', border: '1px solid rgba(99, 102, 241, 0.2)' }}>
+              <div className="w-1.5 h-1.5 rounded-full" style={{ background: '#10b981' }}></div>
+              <span className="text-xs text-gray-300">Private to you</span>
             </div>
           </div>
           <div className="flex items-center gap-4">

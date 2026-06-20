@@ -252,3 +252,168 @@ def test_metric_analyze_stream(session, auth_headers, sample_dataset_id):
         if "error" in payload:
             pytest.fail(f"Stream error: {payload['error']}")
     assert len(content) > 20
+
+
+
+# ===== NEW FEATURES: RENAME, REMOVE-DUPLICATES, CHAT HISTORY =====
+
+def _create_dataset(session, auth_headers, name="TEST_new", with_dupes=False):
+    """Helper to create a dataset and return id + report payload."""
+    import pandas as pd
+    sample = session.get(f"{API}/datasets/sample/data").json()
+    if with_dupes:
+        sample = sample + [sample[0], sample[1]]  # add duplicates
+    csv_bytes = pd.DataFrame(sample).to_csv(index=False).encode()
+    files = {"file": ("s.csv", io.BytesIO(csv_bytes), "text/csv")}
+    rep = session.post(f"{API}/datasets/upload", headers=auth_headers, files=files).json()
+    payload = {
+        "name": name,
+        "cleaned_data": rep["cleaned_data"],
+        "original_data": rep["original_data"],
+        "numeric_columns": rep["numeric_columns"],
+        "label_columns": rep["label_columns"],
+        "quality_score": rep["score"],
+    }
+    r = session.post(f"{API}/datasets/save", headers=auth_headers, json=payload)
+    assert r.status_code == 200, r.text
+    return r.json()["id"], rep
+
+
+# --- Rename Dataset ---
+
+def test_rename_dataset_success(session, auth_headers):
+    ds_id, _ = _create_dataset(session, auth_headers, name="TEST_rename_old")
+    try:
+        r = session.patch(f"{API}/datasets/{ds_id}/rename", headers=auth_headers,
+                          json={"name": "TEST_rename_new"})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["name"] == "TEST_rename_new"
+        # verify persistence
+        r2 = session.get(f"{API}/datasets/{ds_id}", headers=auth_headers)
+        assert r2.status_code == 200
+        assert r2.json()["name"] == "TEST_rename_new"
+    finally:
+        session.delete(f"{API}/datasets/{ds_id}", headers=auth_headers)
+
+
+def test_rename_dataset_not_found(session, auth_headers):
+    r = session.patch(f"{API}/datasets/nonexistent-id/rename", headers=auth_headers,
+                      json={"name": "x"})
+    assert r.status_code == 404
+
+
+def test_rename_dataset_requires_auth(session):
+    r = session.patch(f"{API}/datasets/some-id/rename", json={"name": "x"})
+    assert r.status_code in (401, 403)
+
+
+# --- Remove Duplicates ---
+
+def test_remove_duplicates_success(session, auth_headers):
+    data_with_dups = [
+        {"month": "Jan", "revenue": 100},
+        {"month": "Feb", "revenue": 200},
+        {"month": "Jan", "revenue": 100},  # dup
+        {"month": "Mar", "revenue": 300},
+        {"month": "Feb", "revenue": 200},  # dup
+    ]
+    r = session.post(f"{API}/datasets/remove-duplicates", headers=auth_headers,
+                     json={"cleaned_data": data_with_dups})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["removed"] == 2
+    assert body["remaining"] == 3
+    assert len(body["cleaned_data"]) == 3
+
+
+def test_remove_duplicates_no_dupes(session, auth_headers):
+    data = [{"a": 1}, {"a": 2}, {"a": 3}]
+    r = session.post(f"{API}/datasets/remove-duplicates", headers=auth_headers,
+                     json={"cleaned_data": data})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["removed"] == 0
+    assert body["remaining"] == 3
+
+
+def test_remove_duplicates_requires_auth(session):
+    r = session.post(f"{API}/datasets/remove-duplicates", json={"cleaned_data": []})
+    assert r.status_code in (401, 403)
+
+
+# --- Chat History CRUD ---
+
+def test_chat_save_and_get(session, auth_headers):
+    ds_id, _ = _create_dataset(session, auth_headers, name="TEST_chat")
+    try:
+        # Save user message
+        r = session.post(f"{API}/chat/save", headers=auth_headers,
+                         json={"dataset_id": ds_id, "role": "user", "content": "hello"})
+        assert r.status_code == 200, r.text
+        assert "id" in r.json()
+
+        # Save assistant message
+        r2 = session.post(f"{API}/chat/save", headers=auth_headers,
+                          json={"dataset_id": ds_id, "role": "assistant", "content": "hi there"})
+        assert r2.status_code == 200
+
+        # Get history
+        r3 = session.get(f"{API}/chat/history/{ds_id}", headers=auth_headers)
+        assert r3.status_code == 200
+        msgs = r3.json()
+        assert len(msgs) == 2
+        # Sorted by timestamp ascending
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["content"] == "hello"
+        assert msgs[1]["role"] == "assistant"
+        assert msgs[1]["content"] == "hi there"
+    finally:
+        session.delete(f"{API}/datasets/{ds_id}", headers=auth_headers)
+
+
+def test_chat_history_not_found_dataset(session, auth_headers):
+    r = session.get(f"{API}/chat/history/nonexistent-id", headers=auth_headers)
+    assert r.status_code == 404
+
+
+def test_chat_history_requires_auth(session):
+    r = session.get(f"{API}/chat/history/some-id")
+    assert r.status_code in (401, 403)
+
+
+def test_chat_clear_history(session, auth_headers):
+    ds_id, _ = _create_dataset(session, auth_headers, name="TEST_chat_clear")
+    try:
+        # Save 2 messages
+        session.post(f"{API}/chat/save", headers=auth_headers,
+                     json={"dataset_id": ds_id, "role": "user", "content": "q1"})
+        session.post(f"{API}/chat/save", headers=auth_headers,
+                     json={"dataset_id": ds_id, "role": "assistant", "content": "a1"})
+
+        # Clear
+        r = session.delete(f"{API}/chat/history/{ds_id}", headers=auth_headers)
+        assert r.status_code == 200
+
+        # Verify empty
+        r2 = session.get(f"{API}/chat/history/{ds_id}", headers=auth_headers)
+        assert r2.status_code == 200
+        assert r2.json() == []
+    finally:
+        session.delete(f"{API}/datasets/{ds_id}", headers=auth_headers)
+
+
+def test_delete_dataset_clears_chat(session, auth_headers):
+    ds_id, _ = _create_dataset(session, auth_headers, name="TEST_del_clears_chat")
+    # Add chat msg
+    session.post(f"{API}/chat/save", headers=auth_headers,
+                 json={"dataset_id": ds_id, "role": "user", "content": "x"})
+    # Verify present
+    msgs = session.get(f"{API}/chat/history/{ds_id}", headers=auth_headers).json()
+    assert len(msgs) == 1
+    # Delete dataset
+    r = session.delete(f"{API}/datasets/{ds_id}", headers=auth_headers)
+    assert r.status_code == 200
+    # Dataset is gone => chat history returns 404 (since ownership check fails)
+    r2 = session.get(f"{API}/chat/history/{ds_id}", headers=auth_headers)
+    assert r2.status_code == 404

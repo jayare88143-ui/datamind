@@ -1,8 +1,15 @@
 import React, { useState } from 'react';
-import { CheckCircle, AlertTriangle, XCircle, X } from 'lucide-react';
+import { CheckCircle, AlertTriangle, XCircle, X, Trash2 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import axios from 'axios';
 
-const DataQuality = ({ data, onSave, onCancel }) => {
+const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
+
+const DataQuality = ({ data: initialData, onSave, onCancel }) => {
+  const { token } = useAuth();
+  const [data, setData] = useState(initialData);
   const [datasetName, setDatasetName] = useState('My Dataset');
+  const [removingDuplicates, setRemovingDuplicates] = useState(false);
 
   const getScoreColor = (score) => {
     if (score >= 80) return '#10b981';
@@ -15,6 +22,34 @@ const DataQuality = ({ data, onSave, onCancel }) => {
     if (score >= 60) return 'Good';
     return 'Needs Attention';
   };
+
+  const handleRemoveDuplicates = async () => {
+    setRemovingDuplicates(true);
+    try {
+      const response = await axios.post(
+        `${API_BASE}/datasets/remove-duplicates`,
+        { cleaned_data: data.cleaned_data },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      // Update local data with deduplicated rows, bump score, and rewrite the duplicate issue
+      const newIssues = data.issues
+        .filter(i => !i.message.toLowerCase().includes('duplicate'))
+        .concat([{ type: 'success', message: `Removed ${response.data.removed} duplicate rows` }]);
+      setData({
+        ...data,
+        cleaned_data: response.data.cleaned_data,
+        duplicates_found: 0,
+        score: Math.min(100, data.score + 10),
+        issues: newIssues
+      });
+    } catch (err) {
+      console.error('Remove duplicates failed:', err);
+    } finally {
+      setRemovingDuplicates(false);
+    }
+  };
+
+  const hasDuplicates = data.duplicates_found > 0;
 
   return (
     <div className="min-h-screen p-6" style={{ background: '#0a0a12' }}>
@@ -81,6 +116,28 @@ const DataQuality = ({ data, onSave, onCancel }) => {
             </div>
           </div>
 
+          {/* Remove Duplicates Action (only when duplicates exist) */}
+          {hasDuplicates && (
+            <div className="mb-6 p-4 rounded-lg flex items-center justify-between" style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.2)' }}>
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-5 h-5" style={{ color: '#f59e0b' }} />
+                <div>
+                  <p className="text-white font-medium text-sm">{data.duplicates_found} duplicate row{data.duplicates_found !== 1 ? 's' : ''} found</p>
+                  <p className="text-gray-400 text-xs">Remove them in one click before analysis</p>
+                </div>
+              </div>
+              <button
+                data-testid="remove-duplicates-button"
+                onClick={handleRemoveDuplicates}
+                disabled={removingDuplicates}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#f59e0b] hover:bg-[#d97706] text-white text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                {removingDuplicates ? 'Removing...' : 'Remove Duplicates'}
+              </button>
+            </div>
+          )}
+
           {/* Dataset Name */}
           <div className="mb-6">
             <label className="block text-sm font-medium text-gray-300 mb-2">Dataset Name</label>
@@ -98,7 +155,7 @@ const DataQuality = ({ data, onSave, onCancel }) => {
           <div className="flex gap-4">
             <button
               data-testid="proceed-button"
-              onClick={() => onSave(datasetName)}
+              onClick={() => onSave(datasetName, data)}
               className="flex-1 py-3 rounded-lg bg-[#6366f1] hover:bg-[#5558e3] text-white font-medium transition-all transform hover:scale-[1.02]"
             >
               Proceed to Dashboard

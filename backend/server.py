@@ -125,6 +125,17 @@ class SaveDatasetRequest(BaseModel):
     label_columns: List[str]
     quality_score: int
 
+class RenameDatasetRequest(BaseModel):
+    name: str
+
+class RemoveDuplicatesRequest(BaseModel):
+    cleaned_data: List[Dict[str, Any]]
+
+class ChatMessageSave(BaseModel):
+    dataset_id: str
+    role: str
+    content: str
+
 # ============= AUTH HELPERS =============
 
 def hash_password(password: str) -> str:
@@ -197,7 +208,7 @@ def clean_and_analyze_csv(raw_data: List[Dict]) -> DataQualityReport:
             pd.to_numeric(test_series, errors='raise')
             df[col] = pd.to_numeric(df[col].astype(str).str.replace('$', '').str.replace(',', ''), errors='coerce')
             numeric_columns.append(col)
-        except:
+        except (ValueError, TypeError):
             label_columns.append(col)
     
     # Check for missing values in numeric columns
@@ -437,7 +448,67 @@ async def delete_dataset(dataset_id: str, current_user: Dict = Depends(get_curre
     result = await db.datasets.delete_one({"id": dataset_id, "user_id": current_user['id']})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    # Also delete associated chat messages
+    await db.chat_messages.delete_many({"dataset_id": dataset_id, "user_id": current_user['id']})
     return {"message": "Dataset deleted"}
+
+@api_router.patch("/datasets/{dataset_id}/rename")
+async def rename_dataset(dataset_id: str, request: RenameDatasetRequest, current_user: Dict = Depends(get_current_user)):
+    """Rename a dataset"""
+    result = await db.datasets.update_one(
+        {"id": dataset_id, "user_id": current_user['id']},
+        {"$set": {"name": request.name}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return {"message": "Dataset renamed", "name": request.name}
+
+@api_router.post("/datasets/remove-duplicates")
+async def remove_duplicates(request: RemoveDuplicatesRequest, current_user: Dict = Depends(get_current_user)):
+    """Remove duplicate rows from data and return new quality report"""
+    df = pd.DataFrame(request.cleaned_data)
+    initial_count = len(df)
+    df_dedup = df.drop_duplicates().reset_index(drop=True)
+    removed = initial_count - len(df_dedup)
+    return {
+        "cleaned_data": df_dedup.to_dict('records'),
+        "removed": removed,
+        "remaining": len(df_dedup)
+    }
+
+@api_router.get("/chat/history/{dataset_id}")
+async def get_chat_history(dataset_id: str, current_user: Dict = Depends(get_current_user)):
+    """Get chat message history for a dataset"""
+    # Verify ownership
+    dataset = await db.datasets.find_one({"id": dataset_id, "user_id": current_user['id']}, {"_id": 0})
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    messages = await db.chat_messages.find(
+        {"dataset_id": dataset_id, "user_id": current_user['id']},
+        {"_id": 0}
+    ).sort("timestamp", 1).to_list(500)
+    return messages
+
+@api_router.post("/chat/save")
+async def save_chat_message(message: ChatMessageSave, current_user: Dict = Depends(get_current_user)):
+    """Save a single chat message"""
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": current_user['id'],
+        "dataset_id": message.dataset_id,
+        "role": message.role,
+        "content": message.content,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    await db.chat_messages.insert_one(doc)
+    return {"message": "Saved", "id": doc["id"]}
+
+@api_router.delete("/chat/history/{dataset_id}")
+async def clear_chat_history(dataset_id: str, current_user: Dict = Depends(get_current_user)):
+    """Clear chat history for a dataset"""
+    await db.chat_messages.delete_many({"dataset_id": dataset_id, "user_id": current_user['id']})
+    return {"message": "History cleared"}
 
 @api_router.get("/datasets/sample/data")
 async def get_sample_data():

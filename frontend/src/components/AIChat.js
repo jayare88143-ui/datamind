@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Send, Sparkles } from 'lucide-react';
+import { Send, Sparkles, Trash2 } from 'lucide-react';
+import axios from 'axios';
 
 const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -9,6 +10,7 @@ const AIChat = ({ dataset }) => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const messagesEndRef = useRef(null);
 
   const suggestedQuestions = [
@@ -18,9 +20,54 @@ const AIChat = ({ dataset }) => {
     "Best and worst month overall?"
   ];
 
+  // Load chat history when dataset changes
+  useEffect(() => {
+    const loadHistory = async () => {
+      setHistoryLoaded(false);
+      setMessages([]);
+      try {
+        const response = await axios.get(
+          `${API_BASE}/chat/history/${dataset.id}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const history = response.data.map(m => ({ role: m.role, content: m.content }));
+        setMessages(history);
+      } catch (err) {
+        console.error('Failed to load chat history:', err);
+      } finally {
+        setHistoryLoaded(true);
+      }
+    };
+    if (dataset?.id) loadHistory();
+  }, [dataset?.id, token]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const saveMessage = async (role, content) => {
+    try {
+      await axios.post(
+        `${API_BASE}/chat/save`,
+        { dataset_id: dataset.id, role, content },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+    } catch (err) {
+      console.error('Failed to save message:', err);
+    }
+  };
+
+  const clearHistory = async () => {
+    if (!window.confirm('Clear all chat history for this dataset?')) return;
+    try {
+      await axios.delete(`${API_BASE}/chat/history/${dataset.id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setMessages([]);
+    } catch (err) {
+      console.error('Failed to clear history:', err);
+    }
+  };
 
   const sendMessage = async (text) => {
     if (!text.trim() || isStreaming) return;
@@ -30,8 +77,13 @@ const AIChat = ({ dataset }) => {
     setInput('');
     setIsStreaming(true);
 
+    // Save user message
+    saveMessage('user', text);
+
     const assistantMessage = { role: 'assistant', content: '' };
     setMessages((prev) => [...prev, assistantMessage]);
+
+    let fullResponse = '';
 
     try {
       const response = await fetch(`${API_BASE}/chat/stream`, {
@@ -64,6 +116,7 @@ const AIChat = ({ dataset }) => {
             try {
               const data = JSON.parse(line.slice(6));
               if (data.content) {
+                fullResponse += data.content;
                 setMessages((prev) => {
                   const newMessages = [...prev];
                   newMessages[newMessages.length - 1].content += data.content;
@@ -76,6 +129,10 @@ const AIChat = ({ dataset }) => {
             }
           }
         }
+      }
+      // Save assistant message after streaming completes
+      if (fullResponse) {
+        saveMessage('assistant', fullResponse);
       }
     } catch (error) {
       console.error('Chat error:', error);
@@ -107,8 +164,26 @@ const AIChat = ({ dataset }) => {
 
   return (
     <div className="flex flex-col h-[calc(100vh-200px)]">
+      {/* Header with Clear button */}
+      {messages.length > 0 && (
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4" style={{ color: '#6366f1' }} />
+            <span className="text-sm text-gray-400">{messages.length} message{messages.length !== 1 ? 's' : ''}</span>
+          </div>
+          <button
+            data-testid="clear-chat-history"
+            onClick={clearHistory}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-[#ef4444] hover:bg-[#ef4444]/10 transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Clear History
+          </button>
+        </div>
+      )}
+
       {/* Suggested Questions */}
-      {messages.length === 0 && (
+      {messages.length === 0 && historyLoaded && (
         <div className="mb-6">
           <div className="flex items-center gap-2 mb-4">
             <Sparkles className="w-5 h-5" style={{ color: '#6366f1' }} />
