@@ -82,7 +82,7 @@ const DatasetSelector = ({ datasets, currentDataset, onSelect, onRename, onDelet
         className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#12121f] transition-colors text-left"
       >
         <div>
-          <p className="text-xs text-gray-500">Dataset</p>
+          <p className="text-xs text-gray-500">Dataset:&nbsp;</p>
           <div className="flex items-center gap-1">
             <p className="text-sm font-medium text-white max-w-[200px] truncate">{currentDataset.name}</p>
             <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />

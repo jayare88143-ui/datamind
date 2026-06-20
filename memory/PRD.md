@@ -44,7 +44,29 @@ Small business owners and team members without data analysis skills who need qui
 - P2: One-click duplicate removal button ✅ (Feb 20, 2026)
 - P2: Date format detection and flagging (pending)
 
-## Iteration 4 (Feb 20, 2026) — Critical P4 Bug Fix
+## Iteration 5 (Feb 20, 2026) — Architectural pivot: server-side temp caching
+
+### THIRD ATTEMPT at fixing the recurring "Proceed-to-Dashboard not working" P0
+Previous chunked-storage fix solved the Mongo 16MB doc limit but the **browser** still couldn't handle the 50MB JSON round-trip required to save a 19k-row dataset. User reported it still broken.
+
+**Root cause (real one this time):** Save endpoint required the frontend to round-trip the full cleaned_data + original_data — for the user's CSV that meant 50MB body up + 50MB body back from upload + 50MB body up to save. Browsers reliably hit memory or network thresholds on this.
+
+**Fix — server-side draft caching:**
+- `/datasets/upload` now caches cleaned data as 'draft' chunks in `dataset_rows` collection (TTL 1h via Mongo index `(created_at, 1)` + `partialFilterExpression {status: 'draft'}`)
+- Upload response is now metadata-only: `upload_id`, `score`, `issues`, column lists, `total_rows`, `preview_data` (50 rows). **60KB instead of 50MB.**
+- `/datasets/save` accepts just `upload_id` + name + column configs → looks up cached chunks → flips status draft→committed via `$unset` (no copy, dataset.id reuses upload_id)
+- `/datasets/remove-duplicates` operates on the cached data by upload_id; updates chunks in place
+- Sample data flow now also goes through `/upload` for unified code path
+- NaN/Infinity values sanitized to None for JSON-safe responses
+- Idempotency: second save with same upload_id returns 409
+
+**Verified end-to-end with user's actual 11MB / 19,418-row CSAT CSV:**
+- Upload: 60,115 bytes response (was ~50MB)
+- Save body: 781 bytes (was ~50MB)
+- Save time: 0.3s (was 4s+)
+- Dashboard renders 8 KPI cards, 1396 anomalies, sparklines
+
+50/50 backend tests passing, browser E2E verified.
 - ✅ **ROOT CAUSE**: User's real CSV (19,418 rows × 41 cols) produced a 57MB Mongo doc — exceeded BSON 16MB limit → save 500 silently → Proceed-to-Dashboard never advanced.
 - ✅ **FIX**: Chunked storage. `dataset_rows` collection stores 5,000-row chunks. `datasets` metadata now holds only a 50-row preview + total_rows count.
 - ✅ New endpoint `GET /api/datasets/{id}/rows?skip=&limit=` for on-demand paginated row access (caps at 500/req).
