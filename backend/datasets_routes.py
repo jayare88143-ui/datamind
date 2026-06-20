@@ -1,6 +1,6 @@
-"""Datasets CRUD: upload, save, list, get, delete, rename, remove-duplicates, sample data."""
+"""Datasets CRUD: upload, save, list, get, delete, rename, remove-duplicates, paginated rows."""
 import io
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -17,6 +17,58 @@ from models import (
 
 router = APIRouter(tags=["datasets"])
 
+# Chunk size for splitting cleaned_data across multiple Mongo docs to stay under
+# the 16 MB BSON document limit. ~5 000 rows × ~40 cols × ~80 chars ≈ 12 MB worst-case.
+CHUNK_SIZE = 5000
+
+# Number of rows we include directly in the dataset metadata response so dashboards/charts
+# load instantly without an extra round-trip. Data tab fetches the rest via /rows.
+PREVIEW_ROWS = 50
+
+MAX_ROWS = 50_000  # hard cap, matches the user-facing tip in the upload UI
+
+
+def _strip_chunks_meta(rows: List[dict]) -> List[dict]:
+    return [{k: v for k, v in r.items() if k not in ('_id',)} for r in rows]
+
+
+async def _store_chunks(dataset_id: str, user_id: str, data: List[dict]) -> None:
+    if not data:
+        return
+    chunks = []
+    for i in range(0, len(data), CHUNK_SIZE):
+        chunks.append({
+            "dataset_id": dataset_id,
+            "user_id": user_id,
+            "chunk_index": i // CHUNK_SIZE,
+            "rows": data[i:i + CHUNK_SIZE],
+        })
+    await db.dataset_rows.insert_many(chunks)
+
+
+async def _load_rows(dataset_id: str, user_id: str, skip: int, limit: int) -> List[dict]:
+    """Load `limit` rows starting at `skip` by reading only the chunks that overlap."""
+    if limit <= 0:
+        return []
+    start_chunk = skip // CHUNK_SIZE
+    end_chunk = (skip + limit - 1) // CHUNK_SIZE
+
+    cursor = db.dataset_rows.find(
+        {
+            "dataset_id": dataset_id,
+            "user_id": user_id,
+            "chunk_index": {"$gte": start_chunk, "$lte": end_chunk},
+        },
+        {"_id": 0},
+    ).sort("chunk_index", 1)
+
+    rows: List[dict] = []
+    async for chunk in cursor:
+        rows.extend(chunk['rows'])
+
+    local_skip = skip - start_chunk * CHUNK_SIZE
+    return rows[local_skip:local_skip + limit]
+
 
 @router.post("/datasets/upload")
 async def upload_csv(file: UploadFile = File(...), current_user: Dict = Depends(get_current_user)):
@@ -26,17 +78,27 @@ async def upload_csv(file: UploadFile = File(...), current_user: Dict = Depends(
 
     contents = await file.read()
     try:
-        df = pd.read_csv(io.BytesIO(contents))
+        df = pd.read_csv(io.BytesIO(contents), low_memory=False)
         raw_data = df.to_dict('records')
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+
+    if len(raw_data) > MAX_ROWS:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"This file has {len(raw_data):,} rows. For best results, upload up to "
+                f"~{MAX_ROWS:,} rows or summarize your data first (e.g. daily/monthly "
+                "totals instead of every transaction)."
+            ),
+        )
 
     return clean_and_analyze_csv(raw_data)
 
 
 @router.post("/datasets/save")
 async def save_dataset(request: SaveDatasetRequest, current_user: Dict = Depends(get_current_user)):
-    """Persist a cleaned dataset, compute metrics + anomalies, and return the saved record."""
+    """Persist a cleaned dataset, compute metrics + anomalies, chunk-store the rows."""
     df = pd.DataFrame(request.cleaned_data)
 
     anomalies = detect_anomalies(df, request.numeric_columns, request.label_columns)
@@ -45,8 +107,8 @@ async def save_dataset(request: SaveDatasetRequest, current_user: Dict = Depends
     dataset = Dataset(
         user_id=current_user['id'],
         name=request.name,
-        data=request.cleaned_data,
-        original_data=request.original_data,
+        data=request.cleaned_data[:PREVIEW_ROWS],  # only a preview lives in metadata
+        original_data=[],  # full original is preserved via dataset_rows chunks
         numeric_columns=request.numeric_columns,
         label_columns=request.label_columns,
         metrics=metrics,
@@ -58,14 +120,19 @@ async def save_dataset(request: SaveDatasetRequest, current_user: Dict = Depends
     dataset_dict['created_at'] = dataset_dict['created_at'].isoformat()
     dataset_dict['metrics'] = [m.model_dump() for m in metrics]
     dataset_dict['anomalies'] = [a.model_dump() for a in anomalies]
+    dataset_dict['total_rows'] = len(request.cleaned_data)
 
     await db.datasets.insert_one(dataset_dict)
-    return dataset
+    await _store_chunks(dataset.id, current_user['id'], request.cleaned_data)
+
+    # Strip Mongo's _id (just in case) before returning to client
+    dataset_dict.pop('_id', None)
+    return dataset_dict
 
 
 @router.get("/datasets")
 async def get_datasets(current_user: Dict = Depends(get_current_user)):
-    """All datasets for the current user, newest first."""
+    """All datasets for the current user, newest first. Strips full `data` for list view."""
     datasets = await db.datasets.find(
         {"user_id": current_user['id']},
         {"_id": 0},
@@ -81,11 +148,38 @@ async def get_dataset(dataset_id: str, current_user: Dict = Depends(get_current_
     return dataset
 
 
+@router.get("/datasets/{dataset_id}/rows")
+async def get_dataset_rows(
+    dataset_id: str,
+    skip: int = 0,
+    limit: int = 50,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Paginated row access for the Data tab."""
+    if limit > 500:
+        limit = 500
+    dataset = await db.datasets.find_one(
+        {"id": dataset_id, "user_id": current_user['id']},
+        {"_id": 0, "total_rows": 1},
+    )
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    rows = await _load_rows(dataset_id, current_user['id'], skip, limit)
+    return {
+        "rows": rows,
+        "total": dataset.get('total_rows', 0),
+        "skip": skip,
+        "limit": limit,
+    }
+
+
 @router.delete("/datasets/{dataset_id}")
 async def delete_dataset(dataset_id: str, current_user: Dict = Depends(get_current_user)):
     result = await db.datasets.delete_one({"id": dataset_id, "user_id": current_user['id']})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    await db.dataset_rows.delete_many({"dataset_id": dataset_id, "user_id": current_user['id']})
     await db.chat_messages.delete_many({"dataset_id": dataset_id, "user_id": current_user['id']})
     return {"message": "Dataset deleted"}
 

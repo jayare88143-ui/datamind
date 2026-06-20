@@ -17,6 +17,7 @@ async def ensure_indexes() -> None:
         ("chat_messages", [("dataset_id", 1), ("user_id", 1), ("timestamp", 1)], {}),
         ("datasets", [("user_id", 1), ("created_at", -1)], {}),
         ("users", "email", {"unique": True}),
+        ("dataset_rows", [("dataset_id", 1), ("user_id", 1), ("chunk_index", 1)], {}),
     ]
     for collection, keys, opts in index_specs:
         try:
